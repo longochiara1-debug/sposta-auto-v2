@@ -9,8 +9,8 @@
 [functions]
   node_bundler = "esbuild"
 
-[functions."send-reminders"]
-  schedule = "* * * * *"
+[functions."push-scheduler"]
+  schedule = "*/5 * * * *"
 
 [[headers]]
   for = "/sw.js"
