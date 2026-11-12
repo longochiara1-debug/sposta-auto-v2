@@ -1,8 +1,187 @@
-const DEVICE_KEY="sposta-auto-v2-device-id";
-function id(){let v=localStorage.getItem(DEVICE_KEY);if(!v){v=crypto.randomUUID();localStorage.setItem(DEVICE_KEY,v)}return v}
-function key(v){const p="=".repeat((4-v.length%4)%4),s=(v+p).replace(/-/g,"+").replace(/_/g,"/");return Uint8Array.from([...atob(s)].map(c=>c.charCodeAt(0)))}
-export function supported(){return "serviceWorker" in navigator&&"PushManager" in window&&"Notification" in window}
-export async function status(){if(!supported())return"unsupported";const r=await navigator.serviceWorker.ready,s=await r.pushManager.getSubscription();return s?"enabled":Notification.permission}
-export async function enable(spots=[]){if(!supported())throw Error("Installa e apri la PWA dalla Home di iPhone.");if(await Notification.requestPermission()!=="granted")throw Error("Permesso notifiche non concesso.");const r=await navigator.serviceWorker.ready,k=await fetch("/api/vapid",{cache:"no-store"});if(!k.ok)throw Error("Configurazione VAPID non disponibile.");const {publicKey}=await k.json();let s=await r.pushManager.getSubscription();if(!s)s=await r.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key(publicKey)});await sync(spots,s);return s}
-export async function sync(spots=[],subscription=null){if(!supported()||Notification.permission!=="granted")return;const r=await navigator.serviceWorker.ready,s=subscription||await r.pushManager.getSubscription();if(!s)return;const reminders=spots.filter(x=>x.reminderAt&&x.cleaningAt).map(x=>({id:x.id,vehicle:x.vehicle,address:x.address,segment:x.rule?.segment||"",cleaningAt:x.cleaningAt,reminderAt:x.reminderAt}));const res=await fetch("/api/push-state",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({deviceId:id(),subscription:s.toJSON(),reminders})});if(!res.ok)throw Error("Salvataggio promemoria push non riuscito.")}
-export async function test(){const r=await fetch("/api/push-test",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({deviceId:id()})});if(!r.ok){const j=await r.json().catch(()=>({}));throw Error(j.error||"Notifica di prova non inviata.")}return r.json()}
+const DEVICE_KEY = "sposta-auto-v2-device-id";
+
+function getDeviceId() {
+  let deviceId = localStorage.getItem(DEVICE_KEY);
+
+  if (!deviceId) {
+    deviceId =
+      crypto.randomUUID?.() ||
+      `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    localStorage.setItem(DEVICE_KEY, deviceId);
+  }
+
+  return deviceId;
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+
+  const base64 = (value + padding)
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+
+  const rawData = atob(base64);
+
+  return Uint8Array.from(
+    [...rawData].map((character) => character.charCodeAt(0))
+  );
+}
+
+export function supported() {
+  return (
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window
+  );
+}
+
+export async function status() {
+  if (!supported()) {
+    return "unsupported";
+  }
+
+  if (Notification.permission === "denied") {
+    return "denied";
+  }
+
+  const registration = await navigator.serviceWorker.ready;
+  const subscription =
+    await registration.pushManager.getSubscription();
+
+  return subscription
+    ? "enabled"
+    : Notification.permission;
+}
+
+export async function enable(spots = []) {
+  if (!supported()) {
+    throw new Error(
+      "Le notifiche Push non sono supportate. Su iPhone installa e apri la PWA dalla schermata Home."
+    );
+  }
+
+  const permission = await Notification.requestPermission();
+
+  if (permission !== "granted") {
+    throw new Error("Permesso notifiche non concesso.");
+  }
+
+  const registration = await navigator.serviceWorker.ready;
+
+  const vapidResponse = await fetch("/api/vapid", {
+    cache: "no-store",
+  });
+
+  if (!vapidResponse.ok) {
+    throw new Error("Configurazione VAPID non disponibile.");
+  }
+
+  const payload = await vapidResponse.json();
+  const publicKey = payload?.publicKey;
+
+  if (!publicKey) {
+    throw new Error("Chiave pubblica VAPID mancante.");
+  }
+
+  let subscription =
+    await registration.pushManager.getSubscription();
+
+  if (!subscription) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey:
+        urlBase64ToUint8Array(publicKey),
+    });
+  }
+
+  await sync(spots, subscription);
+
+  return subscription;
+}
+
+export async function sync(
+  spots = [],
+  suppliedSubscription = null
+) {
+  if (
+    !supported() ||
+    Notification.permission !== "granted"
+  ) {
+    return;
+  }
+
+  const registration = await navigator.serviceWorker.ready;
+
+  const subscription =
+    suppliedSubscription ||
+    (await registration.pushManager.getSubscription());
+
+  if (!subscription) {
+    return;
+  }
+
+  const reminders = spots
+    .filter(
+      (spot) =>
+        spot.reminderAt &&
+        spot.cleaningAt
+    )
+    .slice(0, 2)
+    .map((spot) => ({
+      id: spot.id,
+      vehicle: spot.vehicle,
+      address: spot.address,
+      segment: spot.rule?.segment || "",
+      cleaningAt: spot.cleaningAt,
+      reminderAt: spot.reminderAt,
+    }));
+
+  const response = await fetch("/api/push-state", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      deviceId: getDeviceId(),
+      subscription: subscription.toJSON(),
+      reminders,
+    }),
+  });
+
+  if (!response.ok) {
+    const payload = await response
+      .json()
+      .catch(() => ({}));
+
+    throw new Error(
+      payload.error ||
+        "Salvataggio promemoria Push non riuscito."
+    );
+  }
+}
+
+export async function test() {
+  const response = await fetch("/api/push-test", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      deviceId: getDeviceId(),
+    }),
+  });
+
+  const payload = await response
+    .json()
+    .catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      payload.error ||
+        "Notifica di prova non inviata."
+    );
+  }
+
+  return payload;
+}
