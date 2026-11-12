@@ -1,23 +1,11 @@
-import { getStore } from "@netlify/blobs";
-import { createHash } from "node:crypto";
-
-const STORE_NAME = "sposta-auto-push";
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
-}
-
-function subscriptionId(endpoint) {
-  return createHash("sha256")
-    .update(endpoint)
-    .digest("hex");
-}
+import {
+  json,
+  load,
+  save,
+  setup,
+  store,
+  key,
+} from "./_push-lib.mjs";
 
 function isValidSubscription(subscription) {
   return Boolean(
@@ -30,41 +18,116 @@ function isValidSubscription(subscription) {
   );
 }
 
+function isValidDeviceId(deviceId) {
+  return (
+    typeof deviceId === "string" &&
+    deviceId.trim().length >= 8 &&
+    deviceId.trim().length <= 200
+  );
+}
+
 export default async function handler(request) {
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
       headers: {
-        allow: "POST, DELETE, OPTIONS",
-        "access-control-allow-methods": "POST, DELETE, OPTIONS",
+        allow: "GET, POST, DELETE, OPTIONS",
+        "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
         "access-control-allow-headers": "content-type",
       },
     });
   }
 
-  if (request.method !== "POST" && request.method !== "DELETE") {
-    return json(
-      { error: "Metodo non consentito" },
-      405
-    );
-  }
-
   try {
-    const payload = await request.json();
-    const subscription = payload?.subscription;
+    /*
+     * GET /api/push-subscribe
+     *
+     * Restituisce la chiave pubblica VAPID al browser.
+     */
+    if (request.method === "GET") {
+      const publicKey = setup();
 
-    if (!subscription?.endpoint) {
-      return json(
-        { error: "Sottoscrizione Push mancante" },
-        400
-      );
+      return json({
+        ok: true,
+        publicKey,
+      });
     }
 
-    const id = subscriptionId(subscription.endpoint);
-    const store = getStore(STORE_NAME);
+    /*
+     * POST /api/push-subscribe
+     *
+     * Registra o aggiorna la sottoscrizione Push del dispositivo.
+     */
+    if (request.method === "POST") {
+      setup();
 
+      const payload = await request.json();
+      const deviceId = payload?.deviceId?.trim();
+      const subscription = payload?.subscription;
+
+      if (!isValidDeviceId(deviceId)) {
+        return json(
+          {
+            ok: false,
+            error: "Identificativo dispositivo non valido",
+          },
+          400
+        );
+      }
+
+      if (!isValidSubscription(subscription)) {
+        return json(
+          {
+            ok: false,
+            error: "Sottoscrizione Push non valida",
+          },
+          400
+        );
+      }
+
+      const existing = await load(deviceId);
+
+      const device = {
+        deviceId,
+        subscription,
+        reminders: Array.isArray(existing?.reminders)
+          ? existing.reminders
+          : [],
+        createdAt:
+          existing?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        userAgent: request.headers.get("user-agent") || "",
+      };
+
+      await save(deviceId, device);
+
+      return json({
+        ok: true,
+        subscribed: true,
+        deviceId,
+      });
+    }
+
+    /*
+     * DELETE /api/push-subscribe
+     *
+     * Elimina la sottoscrizione e i promemoria del dispositivo.
+     */
     if (request.method === "DELETE") {
-      await store.delete(`subscriptions/${id}`);
+      const payload = await request.json();
+      const deviceId = payload?.deviceId?.trim();
+
+      if (!isValidDeviceId(deviceId)) {
+        return json(
+          {
+            ok: false,
+            error: "Identificativo dispositivo non valido",
+          },
+          400
+        );
+      }
+
+      await store().delete(key(deviceId));
 
       return json({
         ok: true,
@@ -72,33 +135,20 @@ export default async function handler(request) {
       });
     }
 
-    if (!isValidSubscription(subscription)) {
-      return json(
-        { error: "Sottoscrizione Push non valida" },
-        400
-      );
-    }
-
-    const record = {
-      id,
-      subscription,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      userAgent: request.headers.get("user-agent") || "",
-    };
-
-    await store.setJSON(`subscriptions/${id}`, record);
-
-    return json({
-      ok: true,
-      subscriptionId: id,
-    });
+    return json(
+      {
+        ok: false,
+        error: "Metodo non consentito",
+      },
+      405
+    );
   } catch (error) {
-    console.error("Errore registrazione Push:", error);
+    console.error("Errore sottoscrizione Push:", error);
 
     return json(
       {
-        error: "Impossibile registrare le notifiche",
+        ok: false,
+        error: "Impossibile configurare le notifiche Push",
         detail:
           error instanceof Error
             ? error.message
